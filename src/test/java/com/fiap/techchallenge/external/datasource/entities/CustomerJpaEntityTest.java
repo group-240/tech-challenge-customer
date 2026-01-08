@@ -9,7 +9,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 @DisplayName("Customer JPA Entity Tests")
-class CustomerJpaEntityTest {
+class  CustomerJpaEntityTest {
 
     private static final String VALID_CPF = "11144477735";
     private static final String VALID_NAME = "João da Silva";
