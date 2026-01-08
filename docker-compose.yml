@@ -1,14 +1,14 @@
 services:
   app:
     build: .
-    container_name: tech-challenge-app
+    container_name: tech-challenge-app-customers
     ports:
       - "8080:8080"
     environment:
       # Variáveis obrigatórias para a aplicação
       - DB_HOST=postgres
       - DB_PORT=5432
-      - DB_NAME=techchallenge
+      - DB_NAME=techchallengecustomers
       - DB_USER=postgres
       - DB_PASSWORD=postgres
       # Opcional: token Mercado Pago para testes locais (substitua pelo seu token sandbox se necessário)
@@ -27,11 +27,11 @@ services:
 
   postgres:
     image: postgres:15-alpine
-    container_name: tech-challenge-db
+    container_name: tech-challenge-db-customers
     ports:
       - "5432:5432"
     environment:
-      - POSTGRES_DB=techchallenge
+      - POSTGRES_DB=techchallengecustomers
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
     volumes:
