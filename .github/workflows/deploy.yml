@@ -259,7 +259,7 @@ jobs:
       id: init
       run: |
         echo "## 🔄 Terraform Init" >> $GITHUB_STEP_SUMMARY
-        if terraform init -input=false 2>&1 | tee /tmp/tf-init.txt; then
+        if terraform init -input=false -upgrade 2>&1 | tee /tmp/tf-init.txt; then
           echo "✅ Init concluído com sucesso" >> $GITHUB_STEP_SUMMARY
         else
           echo "❌ Falha no Terraform Init!" >> $GITHUB_STEP_SUMMARY
@@ -276,6 +276,16 @@ jobs:
           echo "</details>" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
+
+    - name: "🔧 Fix Terraform State"
+      continue-on-error: true
+      run: |
+        echo "### 🔧 Limpeza de State" >> $GITHUB_STEP_SUMMARY
+        # State foi criado com provider mais novo - remover recursos kubernetes
+        terraform state rm kubernetes_deployment.app 2>/dev/null && echo "  - kubernetes_deployment.app removido" >> $GITHUB_STEP_SUMMARY || true
+        terraform state rm kubernetes_service.app 2>/dev/null && echo "  - kubernetes_service.app removido" >> $GITHUB_STEP_SUMMARY || true
+        terraform state rm kubernetes_secret.db_credentials 2>/dev/null && echo "  - kubernetes_secret.db_credentials removido" >> $GITHUB_STEP_SUMMARY || true
+        echo "✅ State limpo" >> $GITHUB_STEP_SUMMARY
 
     - name: "✅ Terraform Validate"
       run: |
