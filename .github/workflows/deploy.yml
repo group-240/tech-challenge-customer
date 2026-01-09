@@ -434,7 +434,8 @@ jobs:
         echo "## 🔄 Terraform Deploy" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        if terraform init -input=false 2>&1 | tee /tmp/tf-init.txt; then
+        # Usar -upgrade para garantir versão correta do provider
+        if terraform init -input=false -upgrade 2>&1 | tee /tmp/tf-init.txt; then
           echo "✅ Terraform Init OK" >> $GITHUB_STEP_SUMMARY
         else
           echo "❌ Terraform Init falhou!" >> $GITHUB_STEP_SUMMARY
@@ -450,43 +451,19 @@ jobs:
       working-directory: ./terraform
       continue-on-error: true
       run: |
-        echo "### 🔧 Sincronização de State" >> $GITHUB_STEP_SUMMARY
-        
-        # Configurar kubectl
-        aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null || true
-        
-        NAMESPACE="tech-challenge"
-        APP_NAME="customer"
+        echo "### 🔧 Limpeza de State" >> $GITHUB_STEP_SUMMARY
         
         # Fix para bug do Kubernetes provider "Unexpected Identity Change"
-        # Remove recursos do state e reimporta do cluster para garantir consistência
-        echo "🔍 Verificando recursos no cluster..." >> $GITHUB_STEP_SUMMARY
+        # O bug ocorre durante refresh em versões 2.21+
+        # Solução: remover recursos kubernetes do state - terraform vai recriá-los
+        echo "🧹 Removendo recursos kubernetes do state..." >> $GITHUB_STEP_SUMMARY
         
-        # Deployment
-        if kubectl get deployment $APP_NAME -n $NAMESPACE 2>/dev/null; then
-          echo "📦 Deployment $APP_NAME existe no cluster" >> $GITHUB_STEP_SUMMARY
-          echo "🧹 Removendo do state para evitar Identity Change..." >> $GITHUB_STEP_SUMMARY
-          terraform state rm kubernetes_deployment.app 2>/dev/null || true
-          echo "🔄 Reimportando deployment..." >> $GITHUB_STEP_SUMMARY
-          terraform import kubernetes_deployment.app "$NAMESPACE/$APP_NAME" 2>&1 || true
-        else
-          echo "📦 Deployment $APP_NAME não existe no cluster (será criado)" >> $GITHUB_STEP_SUMMARY
-          terraform state rm kubernetes_deployment.app 2>/dev/null || true
-        fi
+        # Remove todos os recursos kubernetes do state
+        terraform state rm kubernetes_deployment.app 2>/dev/null && echo "  - kubernetes_deployment.app removido" >> $GITHUB_STEP_SUMMARY || true
+        terraform state rm kubernetes_service.app 2>/dev/null && echo "  - kubernetes_service.app removido" >> $GITHUB_STEP_SUMMARY || true
+        terraform state rm kubernetes_secret.db_credentials 2>/dev/null && echo "  - kubernetes_secret.db_credentials removido" >> $GITHUB_STEP_SUMMARY || true
         
-        # Service
-        if kubectl get service $APP_NAME -n $NAMESPACE 2>/dev/null; then
-          echo "📦 Service $APP_NAME existe no cluster" >> $GITHUB_STEP_SUMMARY
-          echo "🧹 Removendo do state para evitar Identity Change..." >> $GITHUB_STEP_SUMMARY
-          terraform state rm kubernetes_service.app 2>/dev/null || true
-          echo "🔄 Reimportando service..." >> $GITHUB_STEP_SUMMARY
-          terraform import kubernetes_service.app "$NAMESPACE/$APP_NAME" 2>&1 || true
-        else
-          echo "📦 Service $APP_NAME não existe no cluster (será criado)" >> $GITHUB_STEP_SUMMARY
-          terraform state rm kubernetes_service.app 2>/dev/null || true
-        fi
-        
-        echo "✅ Sincronização concluída" >> $GITHUB_STEP_SUMMARY
+        echo "✅ State limpo - recursos serão recriados" >> $GITHUB_STEP_SUMMARY
 
     - name: "🚀 Terraform Apply"
       working-directory: ./terraform
