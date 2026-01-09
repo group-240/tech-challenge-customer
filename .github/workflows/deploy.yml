@@ -7,6 +7,18 @@ on:
   pull_request:
     branches: 
       - main
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Enable debug mode for verbose logging'
+        required: false
+        default: false
+        type: boolean
+      skip_tests:
+        description: 'Skip tests (emergency deploy only)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -16,47 +28,210 @@ env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: tech-challenge-customer
   EKS_CLUSTER_NAME: tech-challenge-cluster
+  TF_LOG: ${{ github.event.inputs.debug_enabled == 'true' && 'DEBUG' || '' }}
 
 jobs:
-  build-and-test:
+  # ============================================
+  # PRE-FLIGHT CHECKS - Validações antes de tudo
+  # ============================================
+  preflight:
     runs-on: ubuntu-latest
+    outputs:
+      aws_configured: ${{ steps.check-aws.outputs.configured }}
+      secrets_valid: ${{ steps.check-secrets.outputs.valid }}
     steps:
-    - name: Checkout
+    - name: "🔍 Check Required Secrets"
+      id: check-secrets
+      run: |
+        echo "## 🔐 Verificação de Secrets" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        MISSING=""
+        
+        if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ]; then
+          echo "❌ AWS_ACCESS_KEY_ID não configurado" >> $GITHUB_STEP_SUMMARY
+          MISSING="$MISSING AWS_ACCESS_KEY_ID"
+        else
+          echo "✅ AWS_ACCESS_KEY_ID configurado" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+          echo "❌ AWS_SECRET_ACCESS_KEY não configurado" >> $GITHUB_STEP_SUMMARY
+          MISSING="$MISSING AWS_SECRET_ACCESS_KEY"
+        else
+          echo "✅ AWS_SECRET_ACCESS_KEY configurado" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ -z "${{ secrets.AWS_SESSION_TOKEN }}" ]; then
+          echo "⚠️ AWS_SESSION_TOKEN não configurado (necessário para AWS Academy)" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ AWS_SESSION_TOKEN configurado" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ -n "$MISSING" ]; then
+          echo ""
+          echo "### ❌ ERRO: Secrets ausentes:$MISSING" >> $GITHUB_STEP_SUMMARY
+          echo "valid=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        echo "valid=true" >> $GITHUB_OUTPUT
+
+    - name: "☁️ Verify AWS Credentials"
+      id: check-aws
+      continue-on-error: true
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+      run: |
+        echo "## ☁️ Verificação AWS" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Testar credenciais
+        if aws sts get-caller-identity > /tmp/aws-identity.json 2>&1; then
+          ACCOUNT_ID=$(cat /tmp/aws-identity.json | jq -r '.Account')
+          USER_ARN=$(cat /tmp/aws-identity.json | jq -r '.Arn')
+          echo "✅ Credenciais AWS válidas" >> $GITHUB_STEP_SUMMARY
+          echo "- **Account:** $ACCOUNT_ID" >> $GITHUB_STEP_SUMMARY
+          echo "- **ARN:** $USER_ARN" >> $GITHUB_STEP_SUMMARY
+          echo "configured=true" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Credenciais AWS inválidas ou expiradas!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Possíveis causas:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. AWS_SESSION_TOKEN expirado (AWS Academy expira em ~4h)" >> $GITHUB_STEP_SUMMARY
+          echo "2. Credenciais incorretas" >> $GITHUB_STEP_SUMMARY
+          echo "3. Região incorreta" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Como resolver:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Acesse AWS Academy e inicie um novo lab" >> $GITHUB_STEP_SUMMARY
+          echo "2. Copie as novas credenciais (AWS CLI)" >> $GITHUB_STEP_SUMMARY
+          echo "3. Atualize os Secrets do repositório" >> $GITHUB_STEP_SUMMARY
+          echo "configured=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        # Verificar ECR
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📦 ECR Repository" >> $GITHUB_STEP_SUMMARY
+        if aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} > /dev/null 2>&1; then
+          echo "✅ ECR Repository '${{ env.ECR_REPOSITORY }}' existe" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ ECR Repository '${{ env.ECR_REPOSITORY }}' não encontrado" >> $GITHUB_STEP_SUMMARY
+          echo "   - Verifique se tech-challenge-infra foi deployado" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Verificar EKS
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🎯 EKS Cluster" >> $GITHUB_STEP_SUMMARY
+        if aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} > /dev/null 2>&1; then
+          echo "✅ EKS Cluster '${{ env.EKS_CLUSTER_NAME }}' existe e está acessível" >> $GITHUB_STEP_SUMMARY
+          CLUSTER_STATUS=$(aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --query 'cluster.status' --output text)
+          echo "   - Status: $CLUSTER_STATUS" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ EKS Cluster '${{ env.EKS_CLUSTER_NAME }}' não encontrado!" >> $GITHUB_STEP_SUMMARY
+          echo "   - Deploy tech-challenge-infra primeiro" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  # ============================================
+  # BUILD AND TEST
+  # ============================================
+  build-and-test:
+    needs: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      test_status: ${{ steps.tests.outcome }}
+      coverage: ${{ steps.coverage.outputs.percentage }}
+    steps:
+    - name: "📥 Checkout"
       uses: actions/checkout@v4
 
-    - name: Set up JDK 17
+    - name: "☕ Set up JDK 17"
       uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Cache Maven packages
+    - name: "📦 Cache Maven packages"
       uses: actions/cache@v4
       with:
         path: ~/.m2
         key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
         restore-keys: ${{ runner.os }}-m2
 
-    - name: Run tests and check coverage
-      run: mvn clean verify
+    - name: "🧪 Run tests and check coverage"
+      id: tests
+      if: ${{ github.event.inputs.skip_tests != 'true' }}
+      run: |
+        echo "## 🧪 Testes" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if mvn clean verify 2>&1 | tee /tmp/maven-output.txt; then
+          echo "✅ Todos os testes passaram!" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Falha nos testes!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>📋 Ver log completo</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -100 /tmp/maven-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
 
-    - name: Upload JaCoCo coverage report
+    - name: "📊 Extract Coverage"
+      id: coverage
+      if: always() && steps.tests.outcome == 'success'
+      run: |
+        if [ -f target/site/jacoco/index.html ]; then
+          COVERAGE=$(grep -oP 'Total.*?(\d+)%' target/site/jacoco/index.html | grep -oP '\d+' | head -1 || echo "0")
+          echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Cobertura de Código: ${COVERAGE}%" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: "📤 Upload JaCoCo coverage report"
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: jacoco-report
         path: target/site/jacoco/
 
-    - name: Build application
-      run: mvn clean package -DskipTests
+    - name: "🏗️ Build application"
+      run: |
+        echo "## 🏗️ Build" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if mvn clean package -DskipTests 2>&1 | tee /tmp/build-output.txt; then
+          JAR_SIZE=$(ls -lh target/*.jar 2>/dev/null | awk '{print $5}' | head -1)
+          echo "✅ Build concluído com sucesso!" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tamanho do JAR:** $JAR_SIZE" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Falha no build!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>📋 Ver log completo</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -50 /tmp/build-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
 
-    - name: Upload artifact
+    - name: "📤 Upload artifact"
       uses: actions/upload-artifact@v4
       with:
         name: app-jar
         path: target/*.jar
 
+  # ============================================
+  # TERRAFORM PLAN (Pull Requests only)
+  # ============================================
   terraform-plan:
+    needs: [preflight, build-and-test]
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     defaults:
@@ -64,10 +239,10 @@ jobs:
         working-directory: ./terraform
 
     steps:
-    - name: Checkout
+    - name: "📥 Checkout"
       uses: actions/checkout@v4
 
-    - name: Configure AWS Credentials
+    - name: "☁️ Configure AWS Credentials"
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -75,28 +250,97 @@ jobs:
         aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Setup Terraform
+    - name: "🔧 Setup Terraform"
       uses: hashicorp/setup-terraform@v3
 
-    - name: Terraform Init
-      run: terraform init -input=false
+    - name: "🔄 Terraform Init"
+      id: init
+      run: |
+        echo "## 🔄 Terraform Init" >> $GITHUB_STEP_SUMMARY
+        if terraform init -input=false 2>&1 | tee /tmp/tf-init.txt; then
+          echo "✅ Init concluído com sucesso" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Falha no Terraform Init!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Possíveis causas:**" >> $GITHUB_STEP_SUMMARY
+          echo "- S3 bucket para state não existe" >> $GITHUB_STEP_SUMMARY
+          echo "- Permissões insuficientes" >> $GITHUB_STEP_SUMMARY
+          echo "- Providers não disponíveis" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>📋 Log completo</summary>" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/tf-init.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
 
-    - name: Terraform Plan
+    - name: "✅ Terraform Validate"
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## ✅ Terraform Validate" >> $GITHUB_STEP_SUMMARY
+        if terraform validate -no-color 2>&1 | tee /tmp/tf-validate.txt; then
+          echo "✅ Configuração válida!" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Configuração inválida!" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/tf-validate.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+
+    - name: "📋 Terraform Plan"
       id: plan
-      run: terraform plan -no-color -input=false
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📋 Terraform Plan" >> $GITHUB_STEP_SUMMARY
+        
+        terraform plan -no-color -input=false -out=tfplan 2>&1 | tee /tmp/tf-plan.txt
+        PLAN_EXIT_CODE=${PIPESTATUS[0]}
+        
+        if [ $PLAN_EXIT_CODE -eq 0 ]; then
+          # Contar mudanças
+          ADDS=$(grep -c '+ create' /tmp/tf-plan.txt || echo "0")
+          CHANGES=$(grep -c '~ update' /tmp/tf-plan.txt || echo "0")
+          DESTROYS=$(grep -c '- destroy' /tmp/tf-plan.txt || echo "0")
+          
+          echo "### Resumo das Mudanças" >> $GITHUB_STEP_SUMMARY
+          echo "| Ação | Quantidade |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ➕ Criar | $ADDS |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔄 Atualizar | $CHANGES |" >> $GITHUB_STEP_SUMMARY
+          echo "| ➖ Destruir | $DESTROYS |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Erro no Terraform Plan!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>📋 Ver erro completo</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/tf-plan.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        exit $PLAN_EXIT_CODE
       continue-on-error: true
 
-    - name: Comment PR with Plan
+    - name: "💬 Comment PR with Plan"
       uses: actions/github-script@v7
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
-          const output = `#### Customer Terraform Plan 📖\`${{ steps.plan.outcome }}\`
+          const fs = require('fs');
+          const planOutput = fs.readFileSync('/tmp/tf-plan.txt', 'utf8');
+          const truncatedPlan = planOutput.length > 60000 
+            ? planOutput.substring(0, 60000) + '\n\n... (output truncado)' 
+            : planOutput;
           
-          <details><summary>Show Plan</summary>
+          const output = `### 📋 Customer Terraform Plan: \`${{ steps.plan.outcome }}\`
+          
+          <details><summary>Ver Plan Completo</summary>
           
           \`\`\`terraform
-          ${{ steps.plan.outputs.stdout }}
+          ${truncatedPlan}
           \`\`\`
           
           </details>
@@ -110,16 +354,19 @@ jobs:
             body: output
           })
 
+  # ============================================
+  # DEPLOY (Main branch only)
+  # ============================================
   deploy:
-    needs: build-and-test
+    needs: [preflight, build-and-test]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     
     steps:
-    - name: Checkout
+    - name: "📥 Checkout"
       uses: actions/checkout@v4
 
-    - name: Configure AWS Credentials
+    - name: "☁️ Configure AWS Credentials"
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -127,35 +374,186 @@ jobs:
         aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Login to Amazon ECR
+    - name: "🔐 Login to Amazon ECR"
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build, tag, and push image to Amazon ECR
+    - name: "🐳 Build, tag, and push image to Amazon ECR"
+      id: docker-build
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        echo "## 🐳 Docker Build & Push" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Build
+        echo "### Building image..." 
+        if docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest . 2>&1 | tee /tmp/docker-build.txt; then
+          IMAGE_SIZE=$(docker images $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG --format "{{.Size}}")
+          echo "✅ Build concluído!" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image:** \`$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tamanho:** $IMAGE_SIZE" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Falha no Docker build!" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>📋 Log</summary>" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -50 /tmp/docker-build.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+        
+        # Push
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Pushing to ECR..." 
+        if docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG && docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest; then
+          echo "✅ Push concluído para ECR!" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Falha no push para ECR!" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
 
-    - name: Setup Terraform
+    - name: "🔧 Setup Terraform"
       uses: hashicorp/setup-terraform@v3
 
-    - name: Terraform Init
+    - name: "🔄 Terraform Init"
       working-directory: ./terraform
-      run: terraform init -input=false
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🔄 Terraform Deploy" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if terraform init -input=false 2>&1 | tee /tmp/tf-init.txt; then
+          echo "✅ Terraform Init OK" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Terraform Init falhou!" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>📋 Log</summary>" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/tf-init.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
 
-    - name: Fix Terraform State (remove corrupted resources)
+    - name: "🔧 Fix Terraform State (if needed)"
       working-directory: ./terraform
       continue-on-error: true
       run: |
-        # Remove recursos com state corrompido (erro de identity change)
-        terraform state rm kubernetes_deployment.app || true
-        terraform state rm kubernetes_service.app || true
+        echo "### 🔧 Sincronização de State" >> $GITHUB_STEP_SUMMARY
+        
+        # Configurar kubectl
+        aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null || true
+        
+        NAMESPACE="tech-challenge"
+        APP_NAME="customer"
+        
+        # Verificar se o deployment existe no cluster e importar se necessário
+        if kubectl get deployment $APP_NAME -n $NAMESPACE 2>/dev/null; then
+          echo "📦 Deployment $APP_NAME existe no cluster" >> $GITHUB_STEP_SUMMARY
+          if ! terraform state show kubernetes_deployment.app 2>/dev/null; then
+            echo "🔄 Importando deployment para o state..." >> $GITHUB_STEP_SUMMARY
+            terraform import kubernetes_deployment.app "$NAMESPACE/$APP_NAME" || true
+          fi
+        fi
+        
+        # Verificar se o service existe no cluster e importar se necessário
+        if kubectl get service $APP_NAME -n $NAMESPACE 2>/dev/null; then
+          echo "📦 Service $APP_NAME existe no cluster" >> $GITHUB_STEP_SUMMARY
+          if ! terraform state show kubernetes_service.app 2>/dev/null; then
+            echo "🔄 Importando service para o state..." >> $GITHUB_STEP_SUMMARY
+            terraform import kubernetes_service.app "$NAMESPACE/$APP_NAME" || true
+          fi
+        fi
+        
+        echo "✅ Sincronização concluída" >> $GITHUB_STEP_SUMMARY
 
-    - name: Terraform Apply
+    - name: "🚀 Terraform Apply"
       working-directory: ./terraform
-      run: terraform apply -auto-approve -input=false -var="image_tag=${{ github.sha }}"
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🚀 Aplicando mudanças..." >> $GITHUB_STEP_SUMMARY
+        
+        if terraform apply -auto-approve -input=false -var="image_tag=${{ github.sha }}" 2>&1 | tee /tmp/tf-apply.txt; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Deploy concluído com sucesso!**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Mostrar outputs relevantes
+          echo "### 📊 Outputs do Terraform" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          terraform output 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "Nenhum output definido" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        else
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "❌ **Terraform Apply falhou!**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Análise do erro
+          echo "### 🔍 Análise do Erro" >> $GITHUB_STEP_SUMMARY
+          
+          if grep -q "unauthorized" /tmp/tf-apply.txt; then
+            echo "**Problema:** Credenciais AWS inválidas ou expiradas" >> $GITHUB_STEP_SUMMARY
+            echo "**Solução:** Atualize AWS_SESSION_TOKEN no GitHub Secrets" >> $GITHUB_STEP_SUMMARY
+          elif grep -q "not found" /tmp/tf-apply.txt; then
+            echo "**Problema:** Recurso não encontrado (EKS/ECR pode não existir)" >> $GITHUB_STEP_SUMMARY
+            echo "**Solução:** Verifique se tech-challenge-infra foi deployado" >> $GITHUB_STEP_SUMMARY
+          elif grep -q "timeout" /tmp/tf-apply.txt; then
+            echo "**Problema:** Timeout na operação" >> $GITHUB_STEP_SUMMARY
+            echo "**Solução:** Tente novamente ou verifique conectividade com AWS" >> $GITHUB_STEP_SUMMARY
+          elif grep -q "Identity.*changed" /tmp/tf-apply.txt; then
+            echo "**Problema:** State do Terraform dessincronizado" >> $GITHUB_STEP_SUMMARY
+            echo "**Solução:** Execute o workflow de Destroy e depois Deploy novamente" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>📋 Log completo do erro</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -100 /tmp/tf-apply.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          
+          exit 1
+        fi
+
+    - name: "🏥 Verify Deployment Health"
+      if: success()
+      continue-on-error: true
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🏥 Verificação de Saúde" >> $GITHUB_STEP_SUMMARY
+        
+        # Configurar kubectl
+        aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Pods" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        kubectl get pods -n tech-challenge -l app=customer 2>&1 >> $GITHUB_STEP_SUMMARY || echo "Não foi possível listar pods" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Services" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        kubectl get svc -n tech-challenge 2>&1 >> $GITHUB_STEP_SUMMARY || echo "Não foi possível listar services" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+
+    - name: "📊 Final Summary"
+      if: always()
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📊 Resumo Final" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Etapa | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Preflight | ${{ needs.preflight.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Build & Test | ${{ needs.build-and-test.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Docker | ${{ steps.docker-build.outcome == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Deploy | ${{ job.status == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Triggered by:** @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY

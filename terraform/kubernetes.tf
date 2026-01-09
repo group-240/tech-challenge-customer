@@ -1,15 +1,13 @@
-# Kubernetes Namespace
-resource "kubernetes_namespace" "app" {
-  metadata {
-    name = var.namespace
-  }
-}
+# ============================================
+# Kubernetes Deployment para Customer Service
+# NOTA: O namespace é criado pelo repo tech-challenge-infra
+# ============================================
 
 # Kubernetes Deployment
 resource "kubernetes_deployment" "app" {
   metadata {
-    name      = "${var.app_name}-deployment"
-    namespace = kubernetes_namespace.app.metadata[0].name
+    name      = var.app_name
+    namespace = var.namespace
     labels = {
       app = var.app_name
     }
@@ -72,13 +70,20 @@ resource "kubernetes_deployment" "app" {
       }
     }
   }
+
+  # Ignora mudanças na imagem feitas por outros sistemas (ex: CI/CD manual)
+  lifecycle {
+    ignore_changes = [
+      spec[0].template[0].spec[0].container[0].image
+    ]
+  }
 }
 
 # Kubernetes Service
 resource "kubernetes_service" "app" {
   metadata {
-    name      = "${var.app_name}-service"
-    namespace = kubernetes_namespace.app.metadata[0].name
+    name      = var.app_name
+    namespace = var.namespace
   }
 
   spec {

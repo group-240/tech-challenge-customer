@@ -41,10 +41,8 @@ management:
       probes:
         enabled: true
 
-# Logging
+# Logging - Configuração detalhada em logback-spring.xml (JSON estruturado para CloudWatch)
 logging:
   level:
     root: INFO
-    com.fiap.techchallenge: DEBUG
-    org.hibernate.SQL: DEBUG
-    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+    com.fiap.techchallenge: INFO
