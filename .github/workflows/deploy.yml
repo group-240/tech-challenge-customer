@@ -148,6 +148,14 @@ jobs:
       working-directory: ./terraform
       run: terraform init -input=false
 
+    - name: Fix Terraform State (remove corrupted resources)
+      working-directory: ./terraform
+      continue-on-error: true
+      run: |
+        # Remove recursos com state corrompido (erro de identity change)
+        terraform state rm kubernetes_deployment.app || true
+        terraform state rm kubernetes_service.app || true
+
     - name: Terraform Apply
       working-directory: ./terraform
       run: terraform apply -auto-approve -input=false -var="image_tag=${{ github.sha }}"
