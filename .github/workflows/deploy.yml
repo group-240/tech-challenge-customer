@@ -458,30 +458,35 @@ jobs:
         NAMESPACE="tech-challenge"
         APP_NAME="customer"
         
-        # Primeiro tenta um plan para detectar se há erro de Identity Change
-        echo "🔍 Verificando estado do Terraform..." >> $GITHUB_STEP_SUMMARY
-        if terraform plan -input=false -var="image_tag=${{ github.sha }}" 2>&1 | tee /tmp/tf-check.txt | grep -q "Unexpected Identity Change"; then
-          echo "⚠️ Detectado erro 'Unexpected Identity Change' - corrigindo state..." >> $GITHUB_STEP_SUMMARY
-          
-          # Remove recursos corrompidos do state
+        # Fix para bug do Kubernetes provider "Unexpected Identity Change"
+        # Remove recursos do state e reimporta do cluster para garantir consistência
+        echo "🔍 Verificando recursos no cluster..." >> $GITHUB_STEP_SUMMARY
+        
+        # Deployment
+        if kubectl get deployment $APP_NAME -n $NAMESPACE 2>/dev/null; then
+          echo "📦 Deployment $APP_NAME existe no cluster" >> $GITHUB_STEP_SUMMARY
+          echo "🧹 Removendo do state para evitar Identity Change..." >> $GITHUB_STEP_SUMMARY
           terraform state rm kubernetes_deployment.app 2>/dev/null || true
-          terraform state rm kubernetes_service.app 2>/dev/null || true
-          
-          # Reimporta se existir no cluster
-          if kubectl get deployment $APP_NAME -n $NAMESPACE 2>/dev/null; then
-            echo "🔄 Reimportando deployment..." >> $GITHUB_STEP_SUMMARY
-            terraform import kubernetes_deployment.app "$NAMESPACE/$APP_NAME" || true
-          fi
-          
-          if kubectl get service $APP_NAME -n $NAMESPACE 2>/dev/null; then
-            echo "🔄 Reimportando service..." >> $GITHUB_STEP_SUMMARY
-            terraform import kubernetes_service.app "$NAMESPACE/$APP_NAME" || true
-          fi
-          
-          echo "✅ State corrigido!" >> $GITHUB_STEP_SUMMARY
+          echo "🔄 Reimportando deployment..." >> $GITHUB_STEP_SUMMARY
+          terraform import kubernetes_deployment.app "$NAMESPACE/$APP_NAME" 2>&1 || true
         else
-          echo "✅ State OK, nenhuma correção necessária" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Deployment $APP_NAME não existe no cluster (será criado)" >> $GITHUB_STEP_SUMMARY
+          terraform state rm kubernetes_deployment.app 2>/dev/null || true
         fi
+        
+        # Service
+        if kubectl get service $APP_NAME -n $NAMESPACE 2>/dev/null; then
+          echo "📦 Service $APP_NAME existe no cluster" >> $GITHUB_STEP_SUMMARY
+          echo "🧹 Removendo do state para evitar Identity Change..." >> $GITHUB_STEP_SUMMARY
+          terraform state rm kubernetes_service.app 2>/dev/null || true
+          echo "🔄 Reimportando service..." >> $GITHUB_STEP_SUMMARY
+          terraform import kubernetes_service.app "$NAMESPACE/$APP_NAME" 2>&1 || true
+        else
+          echo "📦 Service $APP_NAME não existe no cluster (será criado)" >> $GITHUB_STEP_SUMMARY
+          terraform state rm kubernetes_service.app 2>/dev/null || true
+        fi
+        
+        echo "✅ Sincronização concluída" >> $GITHUB_STEP_SUMMARY
 
     - name: "🚀 Terraform Apply"
       working-directory: ./terraform
