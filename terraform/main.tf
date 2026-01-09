@@ -36,6 +36,16 @@ data "terraform_remote_state" "infra" {
   }
 }
 
+# Remote state from RDS
+data "terraform_remote_state" "rds" {
+  backend = "s3"
+  config = {
+    bucket = "tech-challenge-tfstate-group240"
+    key    = "rds/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+
 # Get EKS cluster auth
 data "aws_eks_cluster_auth" "cluster" {
   name = data.terraform_remote_state.infra.outputs.eks_cluster_name

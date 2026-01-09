@@ -38,6 +38,32 @@ resource "kubernetes_deployment" "app" {
             container_port = var.container_port
           }
 
+          # Variáveis de ambiente para conexão com RDS
+          env {
+            name  = "DB_HOST"
+            value = data.terraform_remote_state.rds.outputs.db_host
+          }
+
+          env {
+            name  = "DB_PORT"
+            value = "5432"
+          }
+
+          env {
+            name  = "DB_NAME"
+            value = data.terraform_remote_state.rds.outputs.db_name
+          }
+
+          env {
+            name  = "DB_USER"
+            value = "postgres"
+          }
+
+          env {
+            name  = "DB_PASSWORD"
+            value = "defaultpassword"
+          }
+
           resources {
             limits = {
               cpu    = "500m"
