@@ -277,16 +277,6 @@ jobs:
           exit 1
         fi
 
-    - name: "🔧 Fix Terraform State"
-      continue-on-error: true
-      run: |
-        echo "### 🔧 Limpeza de State" >> $GITHUB_STEP_SUMMARY
-        # State foi criado com provider mais novo - remover recursos kubernetes
-        terraform state rm kubernetes_deployment.app 2>/dev/null && echo "  - kubernetes_deployment.app removido" >> $GITHUB_STEP_SUMMARY || true
-        terraform state rm kubernetes_service.app 2>/dev/null && echo "  - kubernetes_service.app removido" >> $GITHUB_STEP_SUMMARY || true
-        terraform state rm kubernetes_secret.db_credentials 2>/dev/null && echo "  - kubernetes_secret.db_credentials removido" >> $GITHUB_STEP_SUMMARY || true
-        echo "✅ State limpo" >> $GITHUB_STEP_SUMMARY
-
     - name: "✅ Terraform Validate"
       run: |
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -307,7 +297,8 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "## 📋 Terraform Plan" >> $GITHUB_STEP_SUMMARY
         
-        terraform plan -no-color -input=false -out=tfplan 2>&1 | tee /tmp/tf-plan.txt
+        # Usar -refresh=false para evitar bug "Unexpected Identity Change" do provider kubernetes
+        terraform plan -no-color -input=false -refresh=false -out=tfplan 2>&1 | tee /tmp/tf-plan.txt
         PLAN_EXIT_CODE=${PIPESTATUS[0]}
         
         if [ $PLAN_EXIT_CODE -eq 0 ]; then
@@ -457,31 +448,14 @@ jobs:
           exit 1
         fi
 
-    - name: "🔧 Fix Terraform State (if needed)"
-      working-directory: ./terraform
-      continue-on-error: true
-      run: |
-        echo "### 🔧 Limpeza de State" >> $GITHUB_STEP_SUMMARY
-        
-        # Fix para bug do Kubernetes provider "Unexpected Identity Change"
-        # O bug ocorre durante refresh em versões 2.21+
-        # Solução: remover recursos kubernetes do state - terraform vai recriá-los
-        echo "🧹 Removendo recursos kubernetes do state..." >> $GITHUB_STEP_SUMMARY
-        
-        # Remove todos os recursos kubernetes do state
-        terraform state rm kubernetes_deployment.app 2>/dev/null && echo "  - kubernetes_deployment.app removido" >> $GITHUB_STEP_SUMMARY || true
-        terraform state rm kubernetes_service.app 2>/dev/null && echo "  - kubernetes_service.app removido" >> $GITHUB_STEP_SUMMARY || true
-        terraform state rm kubernetes_secret.db_credentials 2>/dev/null && echo "  - kubernetes_secret.db_credentials removido" >> $GITHUB_STEP_SUMMARY || true
-        
-        echo "✅ State limpo - recursos serão recriados" >> $GITHUB_STEP_SUMMARY
-
-    - name: "🚀 Terraform Apply"
+    - name: " Terraform Apply"
       working-directory: ./terraform
       run: |
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 🚀 Aplicando mudanças..." >> $GITHUB_STEP_SUMMARY
         
-        if terraform apply -auto-approve -input=false -var="image_tag=${{ github.sha }}" 2>&1 | tee /tmp/tf-apply.txt; then
+        # Usar -refresh=false para evitar bug "Unexpected Identity Change" do provider kubernetes
+        if terraform apply -auto-approve -input=false -refresh=false -var="image_tag=${{ github.sha }}" 2>&1 | tee /tmp/tf-apply.txt; then
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "✅ **Deploy concluído com sucesso!**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
