@@ -458,22 +458,23 @@ jobs:
         NAMESPACE="tech-challenge"
         APP_NAME="customer"
         
+        # Fix para erro "Unexpected Identity Change" - remove recursos corrompidos do state
+        echo "🧹 Limpando possíveis recursos corrompidos do state..." >> $GITHUB_STEP_SUMMARY
+        terraform state rm kubernetes_deployment.app 2>/dev/null || true
+        terraform state rm kubernetes_service.app 2>/dev/null || true
+        
         # Verificar se o deployment existe no cluster e importar se necessário
         if kubectl get deployment $APP_NAME -n $NAMESPACE 2>/dev/null; then
           echo "📦 Deployment $APP_NAME existe no cluster" >> $GITHUB_STEP_SUMMARY
-          if ! terraform state show kubernetes_deployment.app 2>/dev/null; then
-            echo "🔄 Importando deployment para o state..." >> $GITHUB_STEP_SUMMARY
-            terraform import kubernetes_deployment.app "$NAMESPACE/$APP_NAME" || true
-          fi
+          echo "🔄 Importando deployment para o state..." >> $GITHUB_STEP_SUMMARY
+          terraform import kubernetes_deployment.app "$NAMESPACE/$APP_NAME" || true
         fi
         
         # Verificar se o service existe no cluster e importar se necessário
         if kubectl get service $APP_NAME -n $NAMESPACE 2>/dev/null; then
           echo "📦 Service $APP_NAME existe no cluster" >> $GITHUB_STEP_SUMMARY
-          if ! terraform state show kubernetes_service.app 2>/dev/null; then
-            echo "🔄 Importando service para o state..." >> $GITHUB_STEP_SUMMARY
-            terraform import kubernetes_service.app "$NAMESPACE/$APP_NAME" || true
-          fi
+          echo "🔄 Importando service para o state..." >> $GITHUB_STEP_SUMMARY
+          terraform import kubernetes_service.app "$NAMESPACE/$APP_NAME" || true
         fi
         
         echo "✅ Sincronização concluída" >> $GITHUB_STEP_SUMMARY

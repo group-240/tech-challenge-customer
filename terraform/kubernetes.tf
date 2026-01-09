@@ -31,6 +31,9 @@ resource "kubernetes_deployment" "app" {
     }
   }
 
+  # Evita erro "Unexpected Identity Change" 
+  wait_for_rollout = false
+
   spec {
     replicas = var.replicas
 
