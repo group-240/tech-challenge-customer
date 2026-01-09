@@ -57,3 +57,6 @@ logs/
 .env.*
 secrets.yml
 secrets.yaml
+
+/target/
+!.mvn/wrapper/maven-wrapper.jar
