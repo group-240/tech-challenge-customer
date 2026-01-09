@@ -26,14 +26,15 @@ springdoc:
 server:
   port: 8080
   servlet:
-    context-path: /
+    context-path: /api
 
 # Actuator configuration
 management:
   endpoints:
     web:
       exposure:
-        include: health, info
+        include: health,info
+      base-path: /actuator
   endpoint:
     health:
       show-details: always
@@ -47,4 +48,3 @@ logging:
     com.fiap.techchallenge: DEBUG
     org.hibernate.SQL: DEBUG
     org.hibernate.type.descriptor.sql.BasicBinder: TRACE
-
