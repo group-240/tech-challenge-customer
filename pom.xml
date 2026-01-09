@@ -59,6 +59,13 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- Logging - JSON structured logs for CloudWatch -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>7.4</version>
+        </dependency>
+
         <!-- Database - PostgreSQL é o único banco de dados utilizado nesta aplicação -->
         <dependency>
             <groupId>org.postgresql</groupId>
