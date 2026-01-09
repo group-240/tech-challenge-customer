@@ -29,6 +29,8 @@ env:
   ECR_REPOSITORY: tech-challenge-customer
   EKS_CLUSTER_NAME: tech-challenge-cluster
   TF_LOG: ${{ github.event.inputs.debug_enabled == 'true' && 'DEBUG' || '' }}
+  TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
+  TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
 
 jobs:
   # ============================================
@@ -257,7 +259,7 @@ jobs:
       id: init
       run: |
         echo "## 🔄 Terraform Init" >> $GITHUB_STEP_SUMMARY
-        if terraform init -input=false 2>&1 | tee /tmp/tf-init.txt; then
+        if terraform init -input=false -upgrade 2>&1 | tee /tmp/tf-init.txt; then
           echo "✅ Init concluído com sucesso" >> $GITHUB_STEP_SUMMARY
         else
           echo "❌ Falha no Terraform Init!" >> $GITHUB_STEP_SUMMARY
@@ -274,6 +276,16 @@ jobs:
           echo "</details>" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
+
+    - name: "🔧 Fix Terraform State"
+      continue-on-error: true
+      run: |
+        echo "### 🔧 Limpeza de State" >> $GITHUB_STEP_SUMMARY
+        # State foi criado com provider mais novo - remover recursos kubernetes
+        terraform state rm kubernetes_deployment.app 2>/dev/null && echo "  - kubernetes_deployment.app removido" >> $GITHUB_STEP_SUMMARY || true
+        terraform state rm kubernetes_service.app 2>/dev/null && echo "  - kubernetes_service.app removido" >> $GITHUB_STEP_SUMMARY || true
+        terraform state rm kubernetes_secret.db_credentials 2>/dev/null && echo "  - kubernetes_secret.db_credentials removido" >> $GITHUB_STEP_SUMMARY || true
+        echo "✅ State limpo" >> $GITHUB_STEP_SUMMARY
 
     - name: "✅ Terraform Validate"
       run: |
@@ -432,7 +444,8 @@ jobs:
         echo "## 🔄 Terraform Deploy" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        if terraform init -input=false 2>&1 | tee /tmp/tf-init.txt; then
+        # Usar -upgrade para garantir versão correta do provider
+        if terraform init -input=false -upgrade 2>&1 | tee /tmp/tf-init.txt; then
           echo "✅ Terraform Init OK" >> $GITHUB_STEP_SUMMARY
         else
           echo "❌ Terraform Init falhou!" >> $GITHUB_STEP_SUMMARY
@@ -448,33 +461,19 @@ jobs:
       working-directory: ./terraform
       continue-on-error: true
       run: |
-        echo "### 🔧 Sincronização de State" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔧 Limpeza de State" >> $GITHUB_STEP_SUMMARY
         
-        # Configurar kubectl
-        aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null || true
+        # Fix para bug do Kubernetes provider "Unexpected Identity Change"
+        # O bug ocorre durante refresh em versões 2.21+
+        # Solução: remover recursos kubernetes do state - terraform vai recriá-los
+        echo "🧹 Removendo recursos kubernetes do state..." >> $GITHUB_STEP_SUMMARY
         
-        NAMESPACE="tech-challenge"
-        APP_NAME="customer"
+        # Remove todos os recursos kubernetes do state
+        terraform state rm kubernetes_deployment.app 2>/dev/null && echo "  - kubernetes_deployment.app removido" >> $GITHUB_STEP_SUMMARY || true
+        terraform state rm kubernetes_service.app 2>/dev/null && echo "  - kubernetes_service.app removido" >> $GITHUB_STEP_SUMMARY || true
+        terraform state rm kubernetes_secret.db_credentials 2>/dev/null && echo "  - kubernetes_secret.db_credentials removido" >> $GITHUB_STEP_SUMMARY || true
         
-        # Verificar se o deployment existe no cluster e importar se necessário
-        if kubectl get deployment $APP_NAME -n $NAMESPACE 2>/dev/null; then
-          echo "📦 Deployment $APP_NAME existe no cluster" >> $GITHUB_STEP_SUMMARY
-          if ! terraform state show kubernetes_deployment.app 2>/dev/null; then
-            echo "🔄 Importando deployment para o state..." >> $GITHUB_STEP_SUMMARY
-            terraform import kubernetes_deployment.app "$NAMESPACE/$APP_NAME" || true
-          fi
-        fi
-        
-        # Verificar se o service existe no cluster e importar se necessário
-        if kubectl get service $APP_NAME -n $NAMESPACE 2>/dev/null; then
-          echo "📦 Service $APP_NAME existe no cluster" >> $GITHUB_STEP_SUMMARY
-          if ! terraform state show kubernetes_service.app 2>/dev/null; then
-            echo "🔄 Importando service para o state..." >> $GITHUB_STEP_SUMMARY
-            terraform import kubernetes_service.app "$NAMESPACE/$APP_NAME" || true
-          fi
-        fi
-        
-        echo "✅ Sincronização concluída" >> $GITHUB_STEP_SUMMARY
+        echo "✅ State limpo - recursos serão recriados" >> $GITHUB_STEP_SUMMARY
 
     - name: "🚀 Terraform Apply"
       working-directory: ./terraform

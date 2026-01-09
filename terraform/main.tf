@@ -8,7 +8,7 @@ terraform {
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
-      version = "~> 2.23"
+      version = "2.20.0"  # Versão fixa para evitar bug "Unexpected Identity Change"
     }
   }
 
@@ -32,6 +32,16 @@ data "terraform_remote_state" "infra" {
   config = {
     bucket = "tech-challenge-tfstate-group240"
     key    = "infra/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+
+# Remote state from RDS
+data "terraform_remote_state" "rds" {
+  backend = "s3"
+  config = {
+    bucket = "tech-challenge-tfstate-group240"
+    key    = "rds/terraform.tfstate"
     region = "us-east-1"
   }
 }
