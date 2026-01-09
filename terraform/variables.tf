@@ -33,3 +33,17 @@ variable "image_tag" {
   type        = string
   default     = "latest"
 }
+
+variable "db_username" {
+  description = "Database username"
+  type        = string
+  sensitive   = true
+  default     = "techuser"
+}
+
+variable "db_password" {
+  description = "Database password"
+  type        = string
+  sensitive   = true
+  default     = "TechChallenge2026!"
+}

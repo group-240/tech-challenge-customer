@@ -3,6 +3,24 @@
 # NOTA: O namespace é criado pelo repo tech-challenge-infra
 # ============================================
 
+# Kubernetes Secret for database credentials
+resource "kubernetes_secret" "db_credentials" {
+  metadata {
+    name      = "${var.app_name}-db-secret"
+    namespace = var.namespace
+  }
+
+  data = {
+    DB_HOST     = data.terraform_remote_state.rds.outputs.db_host
+    DB_PORT     = "5432"
+    DB_NAME     = data.terraform_remote_state.rds.outputs.db_name
+    DB_USER     = var.db_username
+    DB_PASSWORD = var.db_password
+  }
+
+  type = "Opaque"
+}
+
 # Kubernetes Deployment
 resource "kubernetes_deployment" "app" {
   metadata {
@@ -38,30 +56,55 @@ resource "kubernetes_deployment" "app" {
             container_port = var.container_port
           }
 
-          # Variáveis de ambiente para conexão com RDS
+          # Variáveis de ambiente via Kubernetes Secret
           env {
-            name  = "DB_HOST"
-            value = data.terraform_remote_state.rds.outputs.db_host
+            name = "DB_HOST"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.db_credentials.metadata[0].name
+                key  = "DB_HOST"
+              }
+            }
           }
 
           env {
-            name  = "DB_PORT"
-            value = "5432"
+            name = "DB_PORT"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.db_credentials.metadata[0].name
+                key  = "DB_PORT"
+              }
+            }
           }
 
           env {
-            name  = "DB_NAME"
-            value = data.terraform_remote_state.rds.outputs.db_name
+            name = "DB_NAME"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.db_credentials.metadata[0].name
+                key  = "DB_NAME"
+              }
+            }
           }
 
           env {
-            name  = "DB_USER"
-            value = "postgres"
+            name = "DB_USER"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.db_credentials.metadata[0].name
+                key  = "DB_USER"
+              }
+            }
           }
 
           env {
-            name  = "DB_PASSWORD"
-            value = "defaultpassword"
+            name = "DB_PASSWORD"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.db_credentials.metadata[0].name
+                key  = "DB_PASSWORD"
+              }
+            }
           }
 
           resources {
