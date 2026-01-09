@@ -440,11 +440,33 @@ jobs:
       working-directory: ./terraform
       continue-on-error: true
       run: |
-        # Remove recursos com state corrompido (erro de identity change)
-        # Isso pode acontecer quando o cluster é recriado
-        echo "Verificando state..." >> $GITHUB_STEP_SUMMARY
-        terraform state rm kubernetes_deployment.app 2>/dev/null && echo "- Removido kubernetes_deployment.app do state" >> $GITHUB_STEP_SUMMARY || true
-        terraform state rm kubernetes_service.app 2>/dev/null && echo "- Removido kubernetes_service.app do state" >> $GITHUB_STEP_SUMMARY || true
+        echo "### 🔧 Sincronização de State" >> $GITHUB_STEP_SUMMARY
+        
+        # Configurar kubectl
+        aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null || true
+        
+        NAMESPACE="tech-challenge"
+        APP_NAME="customer"
+        
+        # Verificar se o deployment existe no cluster e importar se necessário
+        if kubectl get deployment $APP_NAME -n $NAMESPACE 2>/dev/null; then
+          echo "📦 Deployment $APP_NAME existe no cluster" >> $GITHUB_STEP_SUMMARY
+          if ! terraform state show kubernetes_deployment.app 2>/dev/null; then
+            echo "🔄 Importando deployment para o state..." >> $GITHUB_STEP_SUMMARY
+            terraform import kubernetes_deployment.app "$NAMESPACE/$APP_NAME" || true
+          fi
+        fi
+        
+        # Verificar se o service existe no cluster e importar se necessário
+        if kubectl get service $APP_NAME -n $NAMESPACE 2>/dev/null; then
+          echo "📦 Service $APP_NAME existe no cluster" >> $GITHUB_STEP_SUMMARY
+          if ! terraform state show kubernetes_service.app 2>/dev/null; then
+            echo "🔄 Importando service para o state..." >> $GITHUB_STEP_SUMMARY
+            terraform import kubernetes_service.app "$NAMESPACE/$APP_NAME" || true
+          fi
+        fi
+        
+        echo "✅ Sincronização concluída" >> $GITHUB_STEP_SUMMARY
 
     - name: "🚀 Terraform Apply"
       working-directory: ./terraform
