@@ -189,10 +189,22 @@ jobs:
       if: always() && steps.tests.outcome == 'success'
       run: |
         if [ -f target/site/jacoco/index.html ]; then
-          COVERAGE=$(grep -oP 'Total.*?(\d+)%' target/site/jacoco/index.html | grep -oP '\d+' | head -1 || echo "0")
+          # JaCoCo HTML format: look for the Total row and extract the coverage percentage
+          # The format is: <tfoot><tr><td>Total</td>...<td class="ctr2">XX%</td></tr></tfoot>
+          COVERAGE=$(grep -A5 '<tfoot>' target/site/jacoco/index.html | grep -oP '\d+\s*%' | tail -1 | grep -oP '\d+' || echo "0")
+          
+          # Fallback: try alternative JaCoCo format
+          if [ -z "$COVERAGE" ] || [ "$COVERAGE" = "0" ]; then
+            COVERAGE=$(grep 'ctr2' target/site/jacoco/index.html | tail -1 | grep -oP '\d+(?=\s*%)' | head -1 || echo "N/A")
+          fi
+          
           echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📊 Cobertura de Código: ${COVERAGE}%" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "percentage=N/A" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Cobertura de Código: Relatório não encontrado" >> $GITHUB_STEP_SUMMARY
         fi
 
     - name: "📤 Upload JaCoCo coverage report"
@@ -498,7 +510,6 @@ jobs:
 
     - name: "🏥 Verify Deployment Health"
       if: success()
-      continue-on-error: true
       run: |
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "## 🏥 Verificação de Saúde" >> $GITHUB_STEP_SUMMARY
@@ -506,16 +517,69 @@ jobs:
         # Configurar kubectl
         aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
         
+        # Aguardar pod ficar Ready (máximo 120 segundos)
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Pods" >> $GITHUB_STEP_SUMMARY
+        echo "### ⏳ Aguardando pod ficar Ready..." >> $GITHUB_STEP_SUMMARY
+        
+        MAX_ATTEMPTS=24
+        ATTEMPT=0
+        POD_READY=false
+        
+        while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+          ATTEMPT=$((ATTEMPT + 1))
+          echo "Tentativa $ATTEMPT/$MAX_ATTEMPTS..."
+          
+          # Verificar se pod está Running e Ready
+          POD_STATUS=$(kubectl get pods -n tech-challenge -l app=customer -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
+          READY_STATUS=$(kubectl get pods -n tech-challenge -l app=customer -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
+          
+          if [ "$POD_STATUS" == "Running" ] && [ "$READY_STATUS" == "True" ]; then
+            POD_READY=true
+            echo "✅ Pod está Running e Ready!" >> $GITHUB_STEP_SUMMARY
+            break
+          fi
+          
+          # Se pod está em CrashLoopBackOff, falhar imediatamente
+          CONTAINER_STATUS=$(kubectl get pods -n tech-challenge -l app=customer -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || echo "")
+          if [ "$CONTAINER_STATUS" == "CrashLoopBackOff" ] || [ "$CONTAINER_STATUS" == "ImagePullBackOff" ]; then
+            echo "❌ Pod em estado de erro: $CONTAINER_STATUS" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📋 Logs do Pod" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            kubectl logs -n tech-challenge -l app=customer --tail=50 2>&1 >> $GITHUB_STEP_SUMMARY || echo "Não foi possível obter logs" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          
+          sleep 5
+        done
+        
+        if [ "$POD_READY" != "true" ]; then
+          echo "❌ Timeout: Pod não ficou Ready em 120 segundos" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Status atual dos Pods" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n tech-challenge -l app=customer -o wide 2>&1 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Eventos do Pod" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl describe pod -n tech-challenge -l app=customer 2>&1 | tail -30 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+        
+        # Mostrar status final
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📊 Pods" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
-        kubectl get pods -n tech-challenge -l app=customer 2>&1 >> $GITHUB_STEP_SUMMARY || echo "Não foi possível listar pods" >> $GITHUB_STEP_SUMMARY
+        kubectl get pods -n tech-challenge -l app=customer -o wide 2>&1 >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
         
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Services" >> $GITHUB_STEP_SUMMARY
+        echo "### 🌐 Services" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
-        kubectl get svc -n tech-challenge 2>&1 >> $GITHUB_STEP_SUMMARY || echo "Não foi possível listar services" >> $GITHUB_STEP_SUMMARY
+        kubectl get svc -n tech-challenge 2>&1 >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
 
     - name: "📊 Final Summary"
