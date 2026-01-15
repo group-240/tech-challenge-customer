@@ -4,9 +4,9 @@ Repositório responsável pelo microserviço de clientes.
 
 ## O que este repositório faz
 
-- **API de Clientes** - CRUD de clientes
-- **Autenticação** - Integração com AWS Cognito
-- **Deployment K8s** - Deploy no EKS via Terraform
+- **API de Clientes** - CRUD de clientes.
+- **Autenticação** - Integração com AWS Cognito.
+- **Deployment K8s** - Deploy no EKS via Terraform.
 
 ## Dependências
 
