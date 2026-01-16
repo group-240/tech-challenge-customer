@@ -1,193 +1,24 @@
-# 👤 Tech Challenge - Customer Service
+# Tech Challenge - Customer
 
-Microserviço responsável pelo gerenciamento de clientes do sistema de autoatendimento.
+Repositório responsável pelo microserviço de clientes.
 
-## 📐 Arquitetura do Serviço
+## O que este repositório faz
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                              CUSTOMER SERVICE                                        │
-│                                                                                      │
-│  ┌────────────────────────────────────────────────────────────────────────────────┐ │
-│  │                         Clean Architecture                                      │ │
-│  │                                                                                 │ │
-│  │   ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐          │ │
-│  │   │    External     │────▶│   Application   │────▶│     Domain      │          │ │
-│  │   │      API        │     │    Use Cases    │     │    Entities     │          │ │
-│  │   │                 │     │                 │     │                 │          │ │
-│  │   │ CustomerRest    │     │ CustomerUseCase │     │    Customer     │          │ │
-│  │   │   Controller    │     │     Impl        │     │  (id, name,     │          │ │
-│  │   │                 │     │                 │     │   cpf, email)   │          │ │
-│  │   └────────┬────────┘     └────────┬────────┘     └─────────────────┘          │ │
-│  │            │                       │                                            │ │
-│  │            │                       ▼                                            │ │
-│  │            │              ┌─────────────────┐                                   │ │
-│  │            │              │    Adapters     │                                   │ │
-│  │            │              │                 │                                   │ │
-│  │            │              │ CustomerRepo    │                                   │ │
-│  │            │              │   Gateway       │                                   │ │
-│  │            │              └────────┬────────┘                                   │ │
-│  │            │                       │                                            │ │
-│  └────────────┼───────────────────────┼────────────────────────────────────────────┘ │
-│               │                       │                                              │
-│               ▼                       ▼                                              │
-│        ┌─────────────┐         ┌─────────────┐                                      │
-│        │   Port      │         │     JPA     │                                      │
-│        │   8080      │         │  Repository │                                      │
-│        └─────────────┘         └──────┬──────┘                                      │
-│                                       │                                              │
-└───────────────────────────────────────┼──────────────────────────────────────────────┘
-                                        │
-                                        ▼
-                               ┌─────────────────┐
-                               │  RDS PostgreSQL │
-                               │                 │
-                               │ techchallenge   │
-                               │   customers     │
-                               └─────────────────┘
-```
+- **API de Clientes** - CRUD de clientes.
+- **Autenticação** - Integração com AWS Cognito.
+- **Deployment K8s** - Deploy no EKS via Terraform.
 
-## 🔗 Comunicação com Outros Serviços
+## Dependências
 
-```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                           FLUXO DE COMUNICAÇÃO                              │
-└────────────────────────────────────────────────────────────────────────────┘
+| Dependência | Descrição |
+|-------------|-----------|
+| tech-challenge-infra | EKS Cluster e ECR (via remote state) |
+| Terraform >= 1.10.0 | Ferramenta de IaC |
+| Java 17 | Runtime da aplicação |
+| Maven | Build da aplicação |
 
-                    ┌─────────────────────────────────────┐
-                    │           API Gateway               │
-                    │                                     │
-                    │  POST /customers (criar)            │
-                    │  GET  /customers (listar - auth)    │
-                    │  GET  /customers/{id}               │
-                    │  GET  /customers/cpf/{cpf}          │
-                    └───────────────────┬─────────────────┘
-                                        │
-                                        ▼
-                    ┌─────────────────────────────────────┐
-                    │         NLB (Internal)              │
-                    └───────────────────┬─────────────────┘
-                                        │
-                                        ▼
-                    ┌─────────────────────────────────────┐
-                    │     NGINX Ingress Controller        │
-                    │                                     │
-                    │  /api/customers → customer:80       │
-                    └───────────────────┬─────────────────┘
-                                        │
-                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         CUSTOMER SERVICE (Pod)                              │
-│                                                                             │
-│   ┌─────────────┐          ┌─────────────┐          ┌─────────────┐        │
-│   │   /api/     │          │  Validates  │          │   Persists  │        │
-│   │  customers  │─────────▶│     CPF     │─────────▶│   to RDS    │        │
-│   │             │          │    Email    │          │             │        │
-│   └─────────────┘          └─────────────┘          └──────┬──────┘        │
-│                                                            │               │
-└────────────────────────────────────────────────────────────┼───────────────┘
-                                                             │
-                                        ┌────────────────────┘
-                                        │
-                ┌───────────────────────┼───────────────────────┐
-                │                       │                       │
-                ▼                       │                       ▼
-    ┌─────────────────┐                 │           ┌─────────────────┐
-    │ Orders Service  │                 │           │  Lambda (Auth)  │
-    │                 │◀────────────────┘           │                 │
-    │ Valida CPF do   │                             │  Valida CPF e   │
-    │ cliente ao      │                             │  gera token     │
-    │ criar pedido    │                             │  JWT            │
-    └─────────────────┘                             └─────────────────┘
-```
-
-## 📋 API Endpoints
-
-| Método | Endpoint | Descrição | Auth |
-|--------|----------|-----------|------|
-| POST | `/api/customers` | Cadastrar novo cliente | ❌ |
-| GET | `/api/customers` | Listar todos os clientes | ✅ |
-| GET | `/api/customers/{id}` | Buscar cliente por ID | ✅ |
-| GET | `/api/customers/cpf/{cpf}` | Buscar cliente por CPF | ✅ |
-| GET | `/api/actuator/health` | Health check | ❌ |
-
-## 🗃️ Modelo de Dados
-
-```sql
-CREATE TABLE customers (
-    id UUID PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    email VARCHAR(255) NOT NULL UNIQUE,
-    cpf VARCHAR(11) NOT NULL UNIQUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-## 📦 Dependências (Remote State)
-
-```hcl
-# Infra (EKS, ECR, Namespace)
-data "terraform_remote_state" "infra" {
-  backend = "s3"
-  config = {
-    bucket = "tech-challenge-tfstate-group240"
-    key    = "infra/terraform.tfstate"
-    region = "us-east-1"
-  }
-}
-
-# RDS (PostgreSQL)
-data "terraform_remote_state" "rds" {
-  backend = "s3"
-  config = {
-    bucket = "tech-challenge-tfstate-group240"
-    key    = "rds/terraform.tfstate"
-    region = "us-east-1"
-  }
-}
-```
-
-## 🔐 Variáveis de Ambiente (Kubernetes Secret)
-
-| Variável | Descrição | Origem |
-|----------|-----------|--------|
-| `DB_HOST` | Host do PostgreSQL | RDS outputs |
-| `DB_PORT` | Porta do PostgreSQL (5432) | Fixo |
-| `DB_NAME` | Nome do banco | RDS outputs |
-| `DB_USER` | Usuário do banco | GitHub Secret |
-| `DB_PASSWORD` | Senha do banco | GitHub Secret |
-
-## 🚀 CI/CD (GitHub Actions)
-
-```yaml
-# .github/workflows/deploy.yml
-# Triggers: push to main, pull_request
-
-1. Checkout código
-2. Setup Java 17
-3. Build com Maven
-4. Executar testes
-5. Build Docker image
-6. Push para ECR
-7. Terraform apply (K8s deployment)
-8. Health check
-9. Report coverage
-```
-
-## 🧪 Testes
-
-```bash
-# Rodar testes unitários
-mvn test
-
-# Rodar testes BDD (Cucumber)
-mvn verify -P cucumber
-```
-
-## 📝 Secrets Necessários (GitHub)
+## Secrets Necessários (GitHub)
 
 - `AWS_ACCESS_KEY_ID`
 - `AWS_SECRET_ACCESS_KEY`
 - `AWS_SESSION_TOKEN` (obrigatório para AWS Academy Learner Lab)
-- `DB_USERNAME` - Usuário do PostgreSQL
-- `DB_PASSWORD` - Senha do PostgreSQL
