@@ -18,7 +18,6 @@ Repositório responsável pelo microserviço de clientes.
 | Maven | Build da aplicação |
 
 ## Secrets Necessários (GitHub)
-
 - `AWS_ACCESS_KEY_ID`
 - `AWS_SECRET_ACCESS_KEY`
 - `AWS_SESSION_TOKEN` (obrigatório para AWS Academy Learner Lab)
